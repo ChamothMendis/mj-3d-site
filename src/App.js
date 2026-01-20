@@ -1,13 +1,18 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, Suspense } from 'react';
 import { Instagram, Twitter, Facebook, Youtube } from 'lucide-react';
-import Discography from './Discography'; 
-import Moments from './Moments'; 
+
+// --- OPTIMIZATION 1: LAZY LOAD PAGES ---
+// This prevents the browser from downloading Discography/Moments images
+// until the user actually clicks the button.
+const Discography = React.lazy(() => import('./Discography'));
+const Moments = React.lazy(() => import('./Moments'));
 
 const MJWebsite = () => {
   const canvasRef = useRef(null);
   
   // --- UI STATE ---
   const [isLoaded, setIsLoaded] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0); // New state for % loaded
   const [activePage, setActivePage] = useState('home'); 
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
@@ -23,12 +28,11 @@ const MJWebsite = () => {
     youtube: 'https://www.youtube.com/@michaeljackson'
   };
   
-  // Sync state with refs for the animation loop
   useEffect(() => {
     currentPageRef.current = activePage;
   }, [activePage]);
 
-  // --- 1. FORCE FONT LOADING (FIXES TYPOGRAPHY) ---
+  // --- 1. FORCE FONT LOADING ---
   useEffect(() => {
     const link = document.createElement('link');
     link.href = 'https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@300;700&family=Rock+Salt&display=swap';
@@ -98,7 +102,7 @@ const MJWebsite = () => {
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.outputEncoding = THREE.sRGBEncoding;
       renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Limit pixel ratio for performance
 
       const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
       camera.position.set(0, 1, 6.5);
@@ -130,38 +134,53 @@ const MJWebsite = () => {
       floor.receiveShadow = true;
       scene.add(floor);
 
-      // --- MODEL GROUP ---
-      // We scale this group later in the animate loop
+      // --- MODEL GROUP & LOADING MANAGER ---
       let mjModel = null;
       let mixer = null;
       const mjGroup = new THREE.Group();
       scene.add(mjGroup);
 
       const loader = new THREE.GLTFLoader();
-      loader.load('MJ WOOD.glb', (gltf) => {
-        mjModel = gltf.scene;
-        // Base scale for the model itself
-        mjModel.scale.set(6, 6, 6); 
-        mjModel.position.y = -2;
+      
+      // --- OPTIMIZATION 2: PROGRESS TRACKING ---
+      loader.load(
+        '/MJ WOOD.glb', // Ensure this has the forward slash!
+        (gltf) => {
+          // SUCCESS
+          mjModel = gltf.scene;
+          mjModel.scale.set(6, 6, 6); 
+          mjModel.position.y = -2;
 
-        mjModel.traverse((node) => {
-          if (node.isMesh) {
-            node.castShadow = true;
-            node.receiveShadow = true;
-            if (node.material) {
-                node.material.roughness = 0.4;
-                node.material.metalness = 0.6;
+          mjModel.traverse((node) => {
+            if (node.isMesh) {
+              node.castShadow = true;
+              node.receiveShadow = true;
+              if (node.material) {
+                  node.material.roughness = 0.4;
+                  node.material.metalness = 0.6;
+              }
             }
+          });
+          mjGroup.add(mjModel);
+          if (gltf.animations && gltf.animations.length > 0) {
+            mixer = new THREE.AnimationMixer(mjModel);
+            const action = mixer.clipAction(gltf.animations[0]);
+            action.play();
           }
-        });
-        mjGroup.add(mjModel);
-        if (gltf.animations && gltf.animations.length > 0) {
-          mixer = new THREE.AnimationMixer(mjModel);
-          const action = mixer.clipAction(gltf.animations[0]);
-          action.play();
+          // Small delay to ensure frames are ready before hiding loader
+          setTimeout(() => setIsLoaded(true), 500);
+        },
+        (xhr) => {
+          // PROGRESS
+          if (xhr.lengthComputable) {
+            const percentComplete = (xhr.loaded / xhr.total) * 100;
+            setLoadProgress(Math.round(percentComplete));
+          }
+        },
+        (error) => {
+          console.error('An error occurred loading the model:', error);
         }
-        setIsLoaded(true);
-      });
+      );
 
       // --- PARTICLES ---
       const noteSymbols = ['♪', '♫', '♩', '♬', '♭', '♮'];
@@ -215,13 +234,9 @@ const MJWebsite = () => {
         let targetPos = { x: 0, y: 1, z: 6.5 }; 
         let targetLookAt = { x: 0, y: -0.5, z: 0 };
         let targetRotation = mPos.x * 0.5;
-        
-        // ** MODEL SCALING VARIABLE **
-        // 1 = 100% size. Change this to resize the model dynamically.
         let targetScale = 1; 
 
         if (mobile) {
-            // -- MOBILE SETTINGS --
             if (page === 'home') {
                 targetPos = { x: 0, y: 0.5, z: 11 };
                 targetLookAt = { x: 0, y: -1.5, z: 0 };
@@ -229,17 +244,12 @@ const MJWebsite = () => {
             } else if (page === 'discography') {
                 targetPos = { x: 0, y: 0, z: 14 };
                 targetLookAt = { x: 0, y: -2, z: 0 };
-                
-                // >>> CHANGE SIZE HERE (Mobile Only) <<<
-                // 0.6 = 60% size. 0.8 = 80%. 1.2 = 120%.
-                targetScale = 0.8; 
-                
+                targetScale = 0.6; 
             } else if (page === 'moments') {
                 targetPos = { x: 0, y: 0, z: 12 };
                 targetLookAt = { x: 0, y: -2, z: 0 };
             }
         } else {
-            // -- DESKTOP SETTINGS --
             if (page === 'home') {
                 targetPos = { x: 0 + mPos.x * 0.5, y: 1 - mPos.y * 0.2, z: 6.5 };
                 targetLookAt = { x: 0, y: -0.5, z: 0 };
@@ -252,19 +262,15 @@ const MJWebsite = () => {
             }
         }
 
-        // Apply Camera Move
         camera.position.x += (targetPos.x - camera.position.x) * 0.05;
         camera.position.y += (targetPos.y - camera.position.y) * 0.05;
         camera.position.z += (targetPos.z - camera.position.z) * 0.05;
         camera.lookAt(targetLookAt.x, targetLookAt.y, targetLookAt.z);
 
-        // Apply Smooth Scaling to the Group
         const currentScale = mjGroup.scale.x;
-        // Smooth interpolation
         const smoothScale = currentScale + (targetScale - currentScale) * 0.05;
         mjGroup.scale.set(smoothScale, smoothScale, smoothScale);
 
-        // Apply Rotation
         if (page === 'discography') {
             mjGroup.rotation.y += 0.01;
         } else if (page === 'moments') {
@@ -377,7 +383,23 @@ const MJWebsite = () => {
         gap: isMobile ? '15px' : '0',
         fontSize: '12px', color: '#666', pointerEvents: 'auto' 
     },
-    socials: { display: 'flex', gap: '20px', color: '#fff' }
+    socials: { display: 'flex', gap: '20px', color: '#fff' },
+    
+    // LOADER STYLE
+    loaderOverlay: {
+        position: 'absolute', inset: 0, background: '#000', zIndex: 200, 
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
+    },
+    loaderText: {
+        letterSpacing: '0.5em', color: '#fff', 
+        fontFamily: "'Inter', sans-serif", fontSize: '1.2rem', marginBottom: '10px'
+    },
+    loaderBar: {
+        width: '200px', height: '2px', background: '#333', marginTop: '10px'
+    },
+    loaderFill: {
+        height: '100%', background: '#dc2626', transition: 'width 0.1s linear'
+    }
   };
 
   return (
@@ -417,33 +439,31 @@ const MJWebsite = () => {
           </div>
         )}
 
-        {/* PAGES */}
-        {activePage === 'discography' && <Discography />}
-        {activePage === 'moments' && <Moments />}
+        {/* PAGES (With Suspense for Lazy Loading) */}
+        <Suspense fallback={null}>
+            {activePage === 'discography' && <Discography />}
+            {activePage === 'moments' && <Moments />}
+        </Suspense>
 
         {/* FOOTER */}
         <div style={styles.footer}>
           <div>© 2026 Mr.Mendiz. All rights reserved.</div>
           <div style={styles.socials}>
-            <a href={socialLinks.facebook} target="_blank" rel="noopener noreferrer" style={{color: '#fff', transition: 'transform 0.3s ease, color 0.3s ease'}} onMouseEnter={e => {e.currentTarget.style.transform = 'scale(1.2)'; e.currentTarget.style.color = '#dc2626';}} onMouseLeave={e => {e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.color = '#fff';}}>
-                <Facebook size={20} />
-            </a>
-            <a href={socialLinks.twitter} target="_blank" rel="noopener noreferrer" style={{color: '#fff', transition: 'transform 0.3s ease, color 0.3s ease'}} onMouseEnter={e => {e.currentTarget.style.transform = 'scale(1.2)'; e.currentTarget.style.color = '#dc2626';}} onMouseLeave={e => {e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.color = '#fff';}}>
-                <Twitter size={20} />
-            </a>
-            <a href={socialLinks.instagram} target="_blank" rel="noopener noreferrer" style={{color: '#fff', transition: 'transform 0.3s ease, color 0.3s ease'}} onMouseEnter={e => {e.currentTarget.style.transform = 'scale(1.2)'; e.currentTarget.style.color = '#dc2626';}} onMouseLeave={e => {e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.color = '#fff';}}>
-                <Instagram size={20} />
-            </a>
-            <a href={socialLinks.youtube} target="_blank" rel="noopener noreferrer" style={{color: '#fff', transition: 'transform 0.3s ease, color 0.3s ease'}} onMouseEnter={e => {e.currentTarget.style.transform = 'scale(1.2)'; e.currentTarget.style.color = '#dc2626';}} onMouseLeave={e => {e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.color = '#fff';}}>
-                <Youtube size={20} />
-            </a>
+            <a href={socialLinks.facebook} target="_blank" rel="noopener noreferrer" style={{color: '#fff'}}><Facebook size={20} /></a>
+            <a href={socialLinks.twitter} target="_blank" rel="noopener noreferrer" style={{color: '#fff'}}><Twitter size={20} /></a>
+            <a href={socialLinks.instagram} target="_blank" rel="noopener noreferrer" style={{color: '#fff'}}><Instagram size={20} /></a>
+            <a href={socialLinks.youtube} target="_blank" rel="noopener noreferrer" style={{color: '#fff'}}><Youtube size={20} /></a>
           </div>
         </div>
       </div>
 
+      {/* NEW PROGRESS LOADER */}
       {!isLoaded && (
-        <div style={{position:'absolute', inset:0, background:'#000', zIndex:100, display:'flex', alignItems:'center', justifyContent:'center'}}>
-           <p style={{letterSpacing:'0.5em', color: '#fff', fontFamily: "'Inter', sans-serif"}}>LOADING...</p>
+        <div style={styles.loaderOverlay}>
+           <p style={styles.loaderText}>LOADING {loadProgress}%</p>
+           <div style={styles.loaderBar}>
+               <div style={{...styles.loaderFill, width: `${loadProgress}%`}} />
+           </div>
         </div>
       )}
     </div>
